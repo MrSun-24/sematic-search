@@ -1,0 +1,26 @@
+# Bỏ qua thư mục cache và file biên dịch
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Bỏ qua file môi trường ảo
+.env
+.venv/
+env/
+venv/
+
+# Bỏ qua file log
+*.log
+
+# Bỏ qua dữ liệu tạm
+*.sqlite3
+*.db
+
+# Bỏ qua các file hệ thống
+.DS_Store
+Thumbs.db
+
+# Bỏ qua các thư mục của IDE
+.vscode/
+.idea/

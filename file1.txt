@@ -1,0 +1,6 @@
+Machine learning is a field of artificial intelligence that allows computers
+to learn patterns from data. It is widely used in recommendation systems,
+search engines, and image recognition applications.
+
+Many companies use machine learning to analyze customer behavior and
+improve their services. With enough data, models can make accurate predictions.
