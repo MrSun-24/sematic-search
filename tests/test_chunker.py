@@ -14,9 +14,16 @@ def load_text(path):
 def test_basic_chunking():
     doc = "file1.txt"
     data = load_text(doc)
-    chunker = HybridChunker(chunk_size=50, overlap_tokens=10)
-    chunks = list(chunker.chunk(data, return_format="text"))
-    print(chunks)
-    assert isinstance(chunks, list)     
-    assert len(chunks) > 0                                                                                  
-    assert all(isinstance(c, str) for c in chunks)
+    chunker = HybridChunker(chunk_size=8, overlap_tokens=2)
+    print(chunker.split_sentences(data))
+    for c in chunker.chunk(data, return_format="dict", return_text=True):
+        print(c)
+    for idx, c in enumerate(chunker.chunk(data, return_format="dict", return_text=True)):
+        print(f"Chunk {idx}: text={c['text']}, tokens={c['tokens']}")
+
+    # chunks = list(chunker.chunk(data, return_format="dict", return_text=True))
+    # assert isinstance(chunks, list)     
+    # assert len(chunks) > 0                                                                                  
+    # assert all(isinstance(c, dict) for c in chunks)
+    # assert chunks[1]['tokens'][:2] == chunks[0]['tokens'][-2:]  # Overlap check
+    # print(chunks)

@@ -114,8 +114,8 @@ class HybridChunker:
     ) -> Generator[Union[Dict, str, List[int]], None, None]:
         
         start = 0
-        # "Hôm nay trời rất đẹp. Mình đi đâu đó chơi nhé. Sau đó chúng ta ghé quán cà phê."
-        # tokens = [101,102,103,104,105,106,107,108,109,110,111,112,113,114,115,116,117,118]
+        # "Machine learning is a field of artificial intelligence that allows computersto learn patterns from data."
+        # tokens = [101,102,103,104,105,106,107,108,109,110,111,112,113,114,115,116]
         while start < len(tokens):
             end = min(start + self.chunk_size, len(tokens)) #min(8, 18)
             chunk_tokens = tokens[start:end] #tokens[101,102,103,104,105,106,107,108]
@@ -226,6 +226,7 @@ class HybridChunker:
                     # chunk_data["text"] = self.encoding.decode(current_tokens)
                     chunk_data["text"] = " ".join(current_sent_texts).strip()
 
+                logger.debug("current_tokens before yield: %s", current_tokens)
                 yield self._format_output(chunk_data, return_format)
 
                 # overlap
