@@ -14,7 +14,7 @@ def load_text(path):
 def test_basic_chunking():
     doc = "file1.txt"
     data = load_text(doc)
-    chunker = HybridChunker(chunk_size=8, overlap_tokens=2)
+    chunker = HybridChunker(chunk_size=100, overlap_tokens=20)
     print(chunker.split_sentences(data))
     for c in chunker.chunk(data, return_format="dict", return_text=True):
         print(c)

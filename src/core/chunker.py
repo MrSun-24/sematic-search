@@ -12,13 +12,13 @@ logger = logging.getLogger(__name__) #ghi log trong qua trinh chay(debug, warnin
 class HybridChunker:
     def __init__(
     self, 
-    chunk_size: int = 300,
+    chunk_size: int = 280,
     overlap_tokens: int = 50,
     encoding_name: str = "cl100k_base",
     language_model: str = "en_core_web_sm"
     ):
-        self.chunk_size = chunk_size #so token toi da trong mot chunk
-        self.overlap_tokens = overlap_tokens #so token giu lai o chunk truoc de tao chong cheo
+        self.chunk_size = chunk_size         
+        self.overlap_tokens = overlap_tokens
         self.encoding = tiktoken.get_encoding(encoding_name) #token hoa(gan ma dinh danh(id) cho tung tu tuy tinh huong) => Tokenization
         #Văn bản → Tokenization (Tách mảnh) → Encoding (Gán mã số).
         #Khi AI trả lời: Mã số → Decoding (Giải mã) → Chữ viết.
@@ -27,9 +27,11 @@ class HybridChunker:
         try:
             self.nlp = spacy.load(language_model)
             self.use_spacy = True
+            logger.info(f"spaCy model '{language_model}' loaded successfully.")
         except Exception as e:
-            logger.warning(f"spacy load failed: {e}")
+            logger.warning(f"spaCy load failed: {e}. Using regex fallback.")
             self.use_spacy = False
+            self.nlp = None
 
     # -----------------------
     # Sentence Splitter (tach cau)
@@ -46,44 +48,30 @@ class HybridChunker:
         #Another sentence here?
         if self.use_spacy:
             try:
-                doc = self.nlp(text) # chay mo hinh spacy de phan tich
-                #doc = Hello world!       This is a test.  Another sentence here?
-                #doc.sents = <_cython_3_2_1.generator object at 0x000001D8375BC5F0> la mot generator
-                #de hien thi gia tri 1. ep sang list 2. duyet
+                doc = self.nlp(text) #doc.sents = <_cython_3_2_1.generator object at 0x000001D8375BC5F0> la mot generator
                 return [s.text.strip() for s in doc.sents if s.text.strip()] 
-                # ["Hello world!", "This is a test.", "Another sentence here?"]
             except Exception as e:
                 logger.warning(f"spacy sentence split failed: {e}")
         
         logger.info("Fallback to regex sentence splitting")
         return re.split(r'(?<=[.!?])\s+', text)
+    
     # -----------------------
     # Hash for chunk_id 
     # Tao mot ma bam duy nhat tu danh sach token cua chunk
     # -----------------------
 
     def _hash_tokens(self, tokens: List[int], doc_id: str) ->str:
-        #"This is a short sentence."
-        #Giả sử dùng tiktoken với encoding "cl100k_base", câu trên sẽ được mã hóa thành một danh sách số nguyên (token ID).
-        #tokens = [1532, 318, 257, 1369, 682, 13]
         raw = f"{doc_id}_{tokens}"
-        # raw = "doc1_[1532, 318, 257, 1369, 682, 13]"
-        return hashlib.md5(raw.encode()).hexdigest()
-        # "9f8c3a5d2b5a6e7c1d8f4a9b3c2d1e0f"
+        return hashlib.md5(raw.encode()).hexdigest() # "9f8c3a5d2b5a6e7c1d8f4a9b3c2d1e0f"
 
     # -----------------------
     # Overlap builder (Xay dung chong cheo)
     # -----------------------
+
     def _get_overlap(self, sent_tokens_list: List[List[int]]) -> List[int]:
-        overlap = [] #danh sach rong de chua token chong lan
-        total = 0 #bien dem tong so token them vao overlap
-        #sentences = ["This is sentence one.", "This is sentence two."]
-        #encoding.encode("This is sentence one.")  # [101, 102, 103, 104]
-        #encoding.encode("This is sentence two.")  # [105, 106, 107, 108]
-        # sent_tokens_list = [
-        #     [101, 102, 103, 104],   # token của câu 1
-        #     [105, 106, 107, 108]    # token của câu 2
-        # ]
+        overlap = [] 
+        total = 0
 
         for tokens in reversed(sent_tokens_list):
             if total + len(tokens) <= self.overlap_tokens:
@@ -92,9 +80,6 @@ class HybridChunker:
             else:
                 break
         return overlap
-        # Chunk 1: "Hôm nay thời tiết rất đẹp. Mình đi đâu đó chơi nhé."
-        # Overlap: "Mình đi đâu đó chơi nhé."
-        # Chunk 2: "Mình đi đâu đó chơi nhé. Sau đó chúng ta ghé quán cà phê."
 
     # -----------------------
     # Long sentence fallback
@@ -114,37 +99,25 @@ class HybridChunker:
     ) -> Generator[Union[Dict, str, List[int]], None, None]:
         
         start = 0
-        # "Machine learning is a field of artificial intelligence that allows computersto learn patterns from data."
-        # tokens = [101,102,103,104,105,106,107,108,109,110,111,112,113,114,115,116]
+    
         while start < len(tokens):
-            end = min(start + self.chunk_size, len(tokens)) #min(8, 18)
-            chunk_tokens = tokens[start:end] #tokens[101,102,103,104,105,106,107,108]
+            end = min(start + self.chunk_size, len(tokens)) 
+            chunk_tokens = tokens[start:end] 
 
-            chunk_id = self._hash_tokens(chunk_tokens, doc_id) #"9f8c3a5d2b5a6e7c1d8f4a9b3c2d1e0f"
+            chunk_id = self._hash_tokens(chunk_tokens, doc_id)
 
             chunk_data = {
-                "chunk_id": chunk_id, #"9f8c3a5d2b5a6e7c1d8f4a9b3c2d1e0f"
-                "tokens": chunk_tokens, #[101,102,103,104,105,106,107,108]
+                "chunk_id": chunk_id, 
+                "tokens": chunk_tokens, 
                 "token_count": len(chunk_tokens), #8
                 "source": source
             }
 
+            # fallback: decode token
             if return_text:
-                # fallback: decode token
                 chunk_data["text"] = self.encoding.decode(chunk_tokens)
 
             yield self._format_output(chunk_data, return_format)
-            # Dùng yield để trả chunk đó ra ngoài cho người gọi.
-            # Sau đó hàm tiếp tục vòng lặp để tạo chunk tiếp theo.
-            # ban than no la generator đang lưu trữ các chunk
-            
-            # Vi du
-            # def gen_chunks():
-            #     for i in range(3):
-            #         yield f"chunk {i}"
-
-            #     for chunk in gen_chunks():
-            #         print(chunk)
 
             start += self.chunk_size - self.overlap_tokens
 
@@ -152,6 +125,7 @@ class HybridChunker:
     # Output formatter
     # Muon output trả về text, tokens, hay cả dict thì dung cai nay
     # -----------------------
+
     def _format_output(
         self,
         chunk_data: Dict,
@@ -179,6 +153,9 @@ class HybridChunker:
         return_text: bool = True # lazy decode control
     ) -> Generator[Union[Dict, str, List[int]], None, None]:
         
+        if not text or not text.strip():
+            return
+        
         sentences = self.split_sentences(text)
         if not sentences:
             return 
@@ -191,11 +168,12 @@ class HybridChunker:
         current_sent_texts: List[str] = []
         current_length = 0 #tổng số token hiện tại.
 
-        for id, sent_tokens in enumerate(sentence_token_list):
+        for idx, sent_tokens in enumerate(sentence_token_list):
             sent_len = len(sent_tokens)
 
-            #fallback neu cau qua dai
+            # Neu cau qua dai, chia nho cau do thanh cac chunk nho hon
             if sent_len > self.chunk_size:
+                logger.warning(f"Long sentence detected (length={sent_len}). Splitting...")
                 yield from self._split_long_tokens(
                     sent_tokens,
                     doc_id,
@@ -203,60 +181,60 @@ class HybridChunker:
                     return_format,
                     return_text
                 )
-
                 continue
-
+            
+            # Thêm câu vào chunk hiện tại
             if current_length + sent_len <= self.chunk_size:
                 current_tokens.extend(sent_tokens)
                 current_sent_tokens.append(sent_tokens)
-                current_sent_texts.append(sentences[id])
+                current_sent_texts.append(sentences[idx])
                 current_length += sent_len
             else:
-                #tao chunk
-                chunk_id = self._hash_tokens(current_tokens, doc_id)
+               # Tạo chunk mới
+                if current_tokens:
+                    yield self._create_chunk(
+                        current_tokens, current_sent_texts, doc_id, source, return_format, return_text
+                    )
 
-                chunk_data = {
-                    "chunk_id": chunk_id,
-                    "tokens": current_tokens,
-                    "token_count": len(current_tokens),
-                    "source": source,
-                }
-
-                if return_text:
-                    # chunk_data["text"] = self.encoding.decode(current_tokens)
-                    chunk_data["text"] = " ".join(current_sent_texts).strip()
-
-                logger.debug("current_tokens before yield: %s", current_tokens)
-                yield self._format_output(chunk_data, return_format)
-
-                # overlap
+                # Tính overlap
                 overlap = self._get_overlap(current_sent_tokens)
 
-                # reset chunk
-                current_tokens = overlap
-                current_tokens.extend(sent_tokens)
-
+                # Reset cho chunk mới
+                current_tokens = overlap + sent_tokens
                 current_sent_tokens = [sent_tokens]
-                current_sent_texts = [sentences[id]]
+                current_sent_texts = [sentences[idx]]
                 current_length = len(current_tokens)
 
         # chunk cuối
         if current_tokens:
-            chunk_id = self._hash_tokens(current_tokens, doc_id)
+            yield self._create_chunk(
+                current_tokens, current_sent_texts, doc_id, source, return_format, return_text
+            )
 
-            chunk_data = {
-                "chunk_id": chunk_id,
-                "tokens": current_tokens,
-                "token_count": len(current_tokens),
-                "source": source,
-            }
+# Hàm helper mới (code sạch hơn)
+    def _create_chunk(
+        self,
+        tokens: List[int],
+        sent_texts: List[str],
+        doc_id: str,
+        source: Optional[str],
+        return_format: str,
+        return_text: bool
+    ):
+        chunk_id = self._hash_tokens(tokens, doc_id)
 
-            if return_text:
-                # chunk_data["text"] = self.encoding.decode(current_tokens)
-                chunk_data["text"] = " ".join(current_sent_texts).strip()
+        chunk_data = {
+            "chunk_id": chunk_id,
+            "tokens": tokens,
+            "token_count": len(tokens),
+            "source": source,
+        }
 
-            yield self._format_output(chunk_data, return_format)
+        if return_text:
+            chunk_data["text"] = " ".join(sent_texts).strip()
 
+        return self._format_output(chunk_data, return_format)
+    
 # Text gốc → split_sentences → danh sách câu.
 
 # Câu → encoding.encode → token.
