@@ -1,131 +1,119 @@
 import torch
 import logging
-from typing import List, Union
-from sentence_transformers import SentenceTransformer
 import numpy as np
+from typing import List, Optional, Generator, Any
+from sentence_transformers import SentenceTransformer
 
 logger = logging.getLogger(__name__)
 
 
 class Embedder:
+    """
+    Pure embedding component.
+    Chỉ nhận text(s) và trả về vector(s).
+    Không biết gì về chunking hay metadata.
+    """
+
     def __init__(
         self,
-        model_name: str = "sentence-transformers/all-MiniLM-L6-v2",
-        device: str = None,
-        batch_size: int = 32,
-        normalize: bool = True
+        model_name: str = "intfloat/multilingual-e5-small",   # Model mạnh và phổ biến 2025-2026 tren huggingface, hỗ trợ đa ngôn ngữ, kích thước embedding 384, hiệu suất tốt cho nhiều tác vụ
+        device: Optional[str] = None, # kiem tra device tu user, neu khong co thi tu dong phat hien (cuda > cpu)
+        batch_size: int = 32, # batch size cho encode_batch, can co de tang toc do khi encode nhieu van ban 
+        normalize: bool = True, # co the chuan hoa vector (L2 normalization) de tang toc do khi tinh cosine similarity sau nay
+        max_seq_length: int = 512, # giới hạn độ dài sequence để tránh lỗi khi encode, mặc dù model có thể hỗ trợ hơn nhưng thường không cần thiết và có thể gây lỗi nếu quá dài
+        cache_folder: Optional[str] = None, # tuỳ chọn thư mục cache để lưu model đã tải về, giúp tiết kiệm băng thông và thời gian khi sử dụng lại sau này
     ):
-        """
-        model_name: tên model SBERT
-        device: "cpu" | "cuda" | None (auto detect)
-        batch_size: batch encode size
-        normalize: chuẩn hoá vector (rất quan trọng cho cosine similarity)
-        """
-
-        # Auto detect device
-        if device is None:
-            self.device = "cuda" if torch.cuda.is_available() else "cpu"
-        else:
-            self.device = device
-
-        logger.info(f"Loading model on {self.device}...")
-
-        self.model = SentenceTransformer(model_name, device=self.device)
-
+        self.model_name = model_name
         self.batch_size = batch_size
         self.normalize = normalize
+        self.max_seq_length = max_seq_length
 
-        logger.info(f"Model loaded: {model_name}")
+        # Device detection
+        if device is None:
+            # Tự động phát hiện device: ưu tiên CUDA(GPU) nếu có, ngược lại dùng CPU
+            self.device = "cuda" if torch.cuda.is_available() else "cpu"
+        else:
+            logger.info(f"Using specified device: {device}")
+            self.device = device
 
-    # -----------------------
-    # Encode 1 text
-    # -----------------------
+        logger.info(f"Loading embedding model: {model_name} on {self.device}")
+
+        # Tải model với cấu hình đã chọn
+        self.model = SentenceTransformer(
+            model_name=model_name,
+            device=self.device,
+            cache_folder=cache_folder,
+        )
+
+        # Buộc model không được truncate ngầm. Nếu không có dòng này, SentenceTransformer có thể tự cắt mà không báo lỗi → mất thông tin.
+        if hasattr(self.model, "max_seq_length"):
+            self.model.max_seq_length = max_seq_length
+
+        logger.info(f"Model loaded successfully. Max seq length: {self.model.max_seq_length}")
+
     def encode(self, text: str) -> np.ndarray:
+        """Encode một văn bản duy nhất"""
+        # Trả về vector zero nếu text rỗng hoặc chỉ chứa whitespace, tránh lỗi khi encode và đảm bảo consistent output
+        if not text or not text.strip():
+            return np.zeros(self.model.get_sentence_embedding_dimension(), dtype=np.float32)
+        
+        # Sử dụng encode_batch để tận dụng batch processing ngay cả khi chỉ có 1 văn bản, giúp tận dụng tối đa hiệu suất của model
         return self.encode_batch([text])[0]
 
-    # -----------------------
-    # Encode batch
-    # -----------------------
     def encode_batch(self, texts: List[str]) -> np.ndarray:
+        """Encode nhiều văn bản cùng lúc - hiệu suất cao"""
         if not texts:
-            return np.array([])
+            return np.array([], dtype=np.float32)
+
+        # Truncate an toàn trước khi encode (tránh lỗi vượt max length)
+        safe_texts = [text[:self.max_seq_length * 4] for text in texts]  # ~4 chars ≈ 1 token
 
         embeddings = self.model.encode(
-            texts,
+            safe_texts,
             batch_size=self.batch_size,
             convert_to_numpy=True,
             normalize_embeddings=self.normalize,
-            show_progress_bar=False
+            show_progress_bar=False,
         )
 
         return embeddings
 
-    # -----------------------
-    # Encode chunks (from chunker)
-    # -----------------------
-    def encode_chunks(
-        self,
-        chunks: List[dict],
-        text_key: str = "text"
-    ) -> List[dict]:
-        """
-        Input:
-            [
-                {"chunk_id": ..., "text": "..."},
-                ...
-            ]
-
-        Output:
-            [
-                {"chunk_id": ..., "embedding": [...]},
-                ...
-            ]
-        """
-
-        texts = [c[text_key] for c in chunks]
-
-        embeddings = self.encode_batch(texts)
-
-        results = []
-        for chunk, emb in zip(chunks, embeddings):
-            results.append({
-                "chunk_id": chunk["chunk_id"],
-                "embedding": emb
-            })
-
-        return results
-
-    # -----------------------
-    # Streaming encode (advanced)
-    # -----------------------
     def encode_stream(
         self,
-        chunk_generator,
-        text_key: str = "text"
-    ):
+        text_generator: Generator[str, None, None],
+    ) -> Generator[np.ndarray, None, None]:
         """
-        Nhận generator từ chunker → encode theo batch → yield ra
+        Nhận generator của text → trả về generator của embedding
+        Tiết kiệm memory khi xử lý tài liệu rất lớn.
         """
-
         batch = []
-
-        for chunk in chunk_generator:
-            batch.append(chunk)
+        for text in text_generator:
+            batch.append(text)
 
             if len(batch) >= self.batch_size:
-                yield from self._process_batch(batch, text_key)
+                embeddings = self.encode_batch(batch)
+                yield from embeddings
                 batch = []
 
-        # xử lý batch cuối
+        # Batch cuối cùng
         if batch:
-            yield from self._process_batch(batch, text_key)
+            embeddings = self.encode_batch(batch)
+            yield from embeddings
 
-    def _process_batch(self, batch, text_key):
-        texts = [c[text_key] for c in batch]
-        embeddings = self.encode_batch(texts)
+    # ====================== Utility methods ======================
 
-        for chunk, emb in zip(batch, embeddings):
-            yield {
-                "chunk_id": chunk["chunk_id"],
-                "embedding": emb
-            }
+    def get_embedding_dimension(self) -> int:
+        """Trả về kích thước vector embedding"""
+        return self.model.get_sentence_embedding_dimension()
+
+    def check_compatibility(self, chunker_max_tokens: int) -> bool:
+        """Kiểm tra xem chunk_size từ chunker có an toàn không"""
+        safe_limit = self.max_seq_length - 20  # để dư chỗ cho special tokens
+        if chunker_max_tokens > safe_limit:
+            logger.warning(
+                f"Chunker chunk_size ({chunker_max_tokens}) > safe limit for embedding model ({safe_limit}). "
+                f"Recommend reducing chunk_size to <= {safe_limit}"
+            )
+            return False
+        logger.info(f"Chunk size compatible: {chunker_max_tokens} <= {safe_limit}")
+        return True
